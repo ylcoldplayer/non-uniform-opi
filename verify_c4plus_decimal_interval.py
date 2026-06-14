@@ -24,6 +24,7 @@ from decimal import Decimal, localcontext, ROUND_FLOOR, ROUND_CEILING, getcontex
 from fractions import Fraction
 from pathlib import Path
 import json
+import math
 
 PREC = 100
 getcontext().prec = PREC
@@ -292,6 +293,7 @@ P_q = [
 
 policies = [(0, 1, 1), (0, 0, 1), (1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 1, 1)]
 guard_indices = [1, 0, 2, 1, 2, 0]  # one-based: d2, d1, d3, d2, d3, d1
+exponents = [1, 9, 40]
 x0_str = [
     "-8.59365549110427684060547352373810356279806687",
     "-0.0178290152994757047995861123714012318312941336",
@@ -377,14 +379,170 @@ def dot(a, b):
     return v
 
 
+def min_abs_interval(I):
+    """Certified lower bound for |I| when I does not contain zero."""
+    if I.contains_zero():
+        return Decimal(0)
+    return min(abs(I.lo), abs(I.hi))
+
+
+
+def outgoing_transversality_certificate(k, Y, incoming_denom):
+    """Check outgoing normal velocity at the same crossing point.
+
+    The incoming denominator n_k^T f_{mu_k}(Y) is the event-map denominator.
+    For no Filippov sliding on the positive-radius tube, the outgoing field
+    f_{mu_{k+1}} must cross the same guard in the same nonzero direction.
+    """
+    s = guard_indices[k]
+    mu_out = policies[(k + 1) % len(policies)]
+    n = grad_guard(s)
+    outgoing = dot(n, f_field(mu_out, Y))
+    sign_in = incoming_denom.sign()
+    sign_out = outgoing.sign()
+    same_nonzero = sign_in == sign_out and sign_in in ("positive", "negative")
+    if not same_nonzero:
+        raise RuntimeError(
+            f"outgoing transversality failed on segment {k}: "
+            f"incoming={incoming_denom}, outgoing={outgoing}"
+        )
+    return {
+        "outgoing_policy": str(mu_out),
+        "outgoing_denominator": outgoing,
+        "incoming_sign": sign_in,
+        "outgoing_sign": sign_out,
+        "same_nonzero_sign": same_nonzero,
+        "outgoing_abs_lower": min_abs_interval(outgoing),
+    }
+
+
+def crossing_nonactive_guard_certificate(k, mu, Y):
+    """Check non-active guards at the certified crossing point.
+
+    At segment k only guard s_k is allowed to vanish.  Every other signed
+    guard must be strictly positive at Y, ruling out simultaneous unintended
+    guard hits throughout the enclosed crossing box.
+    """
+    s = guard_indices[k]
+    rows = []
+    min_lower = Decimal("Infinity")
+    for gi in range(3):
+        if gi == s:
+            continue
+        val = signed_guard_value(mu, Y, gi)
+        if val.lo <= 0:
+            raise RuntimeError(
+                f"non-active guard sign failed at crossing segment {k}, guard d_{gi+1}: {val}"
+            )
+        min_lower = min(min_lower, val.lo)
+        rows.append({"guard": gi + 1, "signed_guard": val})
+    return {"rows": rows, "min_lower": min_lower}
+
+
 def matmul(A, B):
     return [[sum((A[i][k] * B[k][j] for k in range(3)), Interval(0)) for j in range(3)] for i in range(3)]
+
+
+def normal_velocity(mu, Y, s):
+    """Interval enclosure of grad(d_s)^T f_mu(Y)."""
+    return dot(grad_guard(s), f_field(mu, Y))
+
+
+def guard_sigma(mu, guard_i):
+    """Sign that makes sigma*d_i nonnegative inside policy mu's cell."""
+    return Interval(1 if mu[guard_i] == 0 else -1)
+
+
+def signed_guard_value(mu, Y, guard_i):
+    """Interval enclosure of the signed guard sigma*d_i(Y)."""
+    return guard_sigma(mu, guard_i) * qdiff(Y)[guard_i]
+
+
+def _poly_mul(a, b, maxdeg=40):
+    out = [Interval(0) for _ in range(min(maxdeg, len(a) + len(b) - 2) + 1)]
+    for i, ai in enumerate(a):
+        for j, bj in enumerate(b):
+            if i + j <= maxdeg:
+                out[i + j] = out[i + j] + ai * bj
+    return out
+
+
+def _poly_pow_linear(a0, a1, n, degree=40):
+    """Power-basis coefficients of (a0+a1*u)^n, padded to degree.
+
+    Computed directly by the binomial formula to avoid intermediate
+    polynomial growth in the certificate loops.
+    """
+    a0 = as_interval(a0)
+    a1 = as_interval(a1)
+    pow0 = [Interval(1)]
+    pow1 = [Interval(1)]
+    for _ in range(n):
+        pow0.append(pow0[-1] * a0)
+        pow1.append(pow1[-1] * a1)
+    coeffs = []
+    for j in range(n + 1):
+        coeffs.append(Interval(math.comb(n, j)) * pow0[n - j] * pow1[j])
+    while len(coeffs) < degree + 1:
+        coeffs.append(Interval(0))
+    return coeffs[:degree + 1]
+
+def _power_to_bernstein(power_coeffs, degree=40):
+    """Convert p(u)=sum_j c_j u^j to degree-'degree' Bernstein coefficients."""
+    bs = []
+    for i in range(degree + 1):
+        val = Interval(0)
+        for j in range(i + 1):
+            if j < len(power_coeffs):
+                factor = Fraction(math.comb(i, j), math.comb(degree, j))
+                val += power_coeffs[j] * Interval.from_fraction(factor)
+        bs.append(val)
+    return bs
+
+
+def signed_guard_bernstein_on_r_interval(mu, X, guard_i, rlo, rhi, degree=40):
+    """Bernstein coefficients for sigma*d_i(Phi_mu(X,r)), r in [rlo,rhi].
+
+    The affine substitution r = rlo + (rhi-rlo) u maps u in [0,1] to the
+    full candidate segment.  Positivity of all non-excluded coefficients
+    certifies that the trajectory remains in the intended policy cell over
+    that whole r-interval.
+    """
+    r0 = as_interval(rlo)
+    r1 = as_interval(rhi) - r0
+    poly = [Interval(0) for _ in range(degree + 1)]
+    const = g[guard_i][1] - g[guard_i][0]
+    for j in range(3):
+        const += alpha * (P[guard_i][1][j] - P[guard_i][0][j]) * Jpol[mu][j]
+    poly[0] = const
+    for j, m in enumerate(exponents):
+        coeff = alpha * (P[guard_i][1][j] - P[guard_i][0][j]) * (X[j] - Jpol[mu][j])
+        powpoly = _poly_pow_linear(r0, r1, m, degree)
+        for deg in range(degree + 1):
+            poly[deg] = poly[deg] + coeff * powpoly[deg]
+    sigma = guard_sigma(mu, guard_i)
+    return _power_to_bernstein([sigma * c for c in poly], degree)
+
+
+def bernstein_positive_certificate(coeffs, excluded=()):
+    """Return positivity data for Bernstein coefficients outside exclusions."""
+    excluded = set(excluded)
+    lower = Decimal('Infinity')
+    bad = []
+    for idx, coeff in enumerate(coeffs):
+        if idx in excluded:
+            continue
+        if coeff.lo < lower:
+            lower = coeff.lo
+        if coeff.lo <= 0:
+            bad.append((idx, coeff.to_pair()))
+    return {"ok": len(bad) == 0, "min_lower": lower, "bad": bad}
 
 
 def event_derivative(mu, Y, r, s):
     f = f_field(mu, Y)
     n = grad_guard(s)
-    denom = dot(n, f)
+    denom = normal_velocity(mu, Y, s)
     if denom.contains_zero():
         raise RuntimeError(f"event denominator contains zero: {denom}")
     A = []
@@ -418,6 +576,166 @@ def inf_norm(M):
     for i in range(3):
         rows.append(directed_sum((M[i][j].abs_upper() for j in range(3)), ROUND_CEILING))
     return max(rows), rows
+
+
+def interval_abs_lower(I):
+    """Lower bound for |I| when I does not contain zero; otherwise 0."""
+    I = as_interval(I)
+    if I.contains_zero():
+        return Decimal(0)
+    return min(abs(I.lo), abs(I.hi))
+
+
+def poly_mul_truncated(a, b, maxdeg=40):
+    """Interval polynomial product truncated to maxdeg."""
+    out = [Interval(0) for _ in range(min(maxdeg, len(a) + len(b) - 2) + 1)]
+    for i, ai in enumerate(a):
+        for j, bj in enumerate(b):
+            if i + j <= maxdeg:
+                out[i + j] = out[i + j] + ai * bj
+    return out
+
+
+def poly_pow_linear(a0, a1, n, degree=40):
+    """Power-basis coefficients of (a0+a1*u)^n, padded to degree.
+
+    Computed directly by the binomial formula to keep the section certificate
+    fast and memory-stable.
+    """
+    a0 = as_interval(a0)
+    a1 = as_interval(a1)
+    pow0 = [Interval(1)]
+    pow1 = [Interval(1)]
+    for _ in range(n):
+        pow0.append(pow0[-1] * a0)
+        pow1.append(pow1[-1] * a1)
+    coeffs = []
+    for j in range(n + 1):
+        coeffs.append(Interval(math.comb(n, j)) * pow0[n - j] * pow1[j])
+    while len(coeffs) < degree + 1:
+        coeffs.append(Interval(0))
+    return coeffs[:degree + 1]
+
+_BERNSTEIN_FACTOR_CACHE = {}
+
+
+def _bernstein_factors(degree=40):
+    factors = _BERNSTEIN_FACTOR_CACHE.get(degree)
+    if factors is None:
+        factors = []
+        for i in range(degree + 1):
+            row = []
+            for j in range(i + 1):
+                row.append(Interval.from_fraction(Fraction(math.comb(i, j), math.comb(degree, j))))
+            factors.append(row)
+        _BERNSTEIN_FACTOR_CACHE[degree] = factors
+    return factors
+
+
+def power_to_bernstein(power_coeffs, degree=40):
+    """Convert power-basis interval coefficients to Bernstein coefficients."""
+    factors = _bernstein_factors(degree)
+    bs = []
+    for i in range(degree + 1):
+        val = Interval(0)
+        for j in range(i + 1):
+            if j < len(power_coeffs):
+                val += power_coeffs[j] * factors[i][j]
+        bs.append(val)
+    return bs
+
+
+def power_to_bernstein_min_lower(power_coeffs, excluded_indices=(), degree=40):
+    """Direct lower bound on non-excluded Bernstein coefficients.
+
+    This avoids constructing full interval Bernstein coefficients when only a
+    positive lower bound is needed.  Bernstein conversion coefficients are
+    nonnegative, so each product lower bound is computed directly with
+    downward rounding.
+    """
+    excluded = set(excluded_indices)
+    factors = _bernstein_factors(degree)
+    best = Decimal("Infinity")
+    seen = False
+    for i in range(degree + 1):
+        if i in excluded:
+            continue
+        seen = True
+        with localcontext() as ctx:
+            ctx.prec = PREC
+            ctx.rounding = ROUND_FLOOR
+            val = Decimal(0)
+            for j in range(i + 1):
+                if j < len(power_coeffs):
+                    coeff = power_coeffs[j]
+                    factor = factors[i][j]
+                    # factor is nonnegative.  If coeff.lo is negative, the
+                    # smallest product uses the upper endpoint of the factor;
+                    # otherwise it uses the lower endpoint.
+                    scale = factor.hi if coeff.lo < 0 else factor.lo
+                    val += coeff.lo * scale
+        if val < best:
+            best = val
+    if not seen:
+        raise ValueError("all Bernstein coefficients were excluded")
+    return best
+
+
+def guard_segment_power_polynomials(Rk, degree=40):
+    """Precompute powers of r=Rk+(1-Rk)u used by all three guards."""
+    r0 = Rk
+    r1 = Interval(1) - Rk
+    return {m: poly_pow_linear(r0, r1, m, degree) for m in (1, 9, 40)}
+
+
+def signed_guard_power_coeffs_from_powers(Xk, mu, guard_i, power_polys, degree=40):
+    """Power-basis interval coefficients for the signed guard."""
+    sigma = Interval(1 if mu[guard_i] == 0 else -1)
+    poly = [Interval(0) for _ in range(degree + 1)]
+    const = g[guard_i][1] - g[guard_i][0]
+    for j in range(3):
+        const += alpha * (P[guard_i][1][j] - P[guard_i][0][j]) * Jpol[mu][j]
+    poly[0] = const
+    exponents = [1, 9, 40]
+    for j, m in enumerate(exponents):
+        coeff = alpha * (P[guard_i][1][j] - P[guard_i][0][j]) * (Xk[j] - Jpol[mu][j])
+        powpoly = power_polys[m]
+        for deg in range(degree + 1):
+            poly[deg] = poly[deg] + coeff * powpoly[deg]
+    return [sigma * c for c in poly]
+
+
+def signed_guard_bernstein_intervals_from_powers(Xk, mu, guard_i, power_polys, degree=40):
+    """Bernstein coefficients for the signed guard using precomputed powers."""
+    signed_power = signed_guard_power_coeffs_from_powers(Xk, mu, guard_i, power_polys, degree)
+    return power_to_bernstein(signed_power, degree)
+
+
+def signed_guard_bernstein_min_lower_from_powers(Xk, mu, guard_i, power_polys, excluded_indices=(), degree=40):
+    """Fast lower bound for signed guard Bernstein coefficients."""
+    signed_power = signed_guard_power_coeffs_from_powers(Xk, mu, guard_i, power_polys, degree)
+    return power_to_bernstein_min_lower(signed_power, excluded_indices, degree)
+
+
+def signed_guard_bernstein_intervals(Xk, Rk, mu, guard_i, degree=40):
+    """Bernstein coefficients for the signed guard on r in [Rk,1].
+
+    The parameterization is r = Rk + (1-Rk) u, u in [0,1].
+    The sign is chosen so that the intended greedy action under mu has
+    nonnegative signed guard: +d_i for action 0 and -d_i for action 1.
+    """
+    powers = guard_segment_power_polynomials(Rk, degree)
+    return signed_guard_bernstein_intervals_from_powers(Xk, mu, guard_i, powers, degree)
+
+
+def bernstein_min_lower(coeffs, excluded_indices=()):
+    """Minimum lower endpoint among non-excluded Bernstein coefficients."""
+    excluded = set(excluded_indices)
+    lows = [coeff.lo for idx, coeff in enumerate(coeffs) if idx not in excluded]
+    if not lows:
+        raise ValueError("all Bernstein coefficients were excluded")
+    return min(lows)
+
 
 
 def root_interval_newton(mu, X, s, z_center, init_width="1e-5", iterations=6):
@@ -482,6 +800,8 @@ def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
     X = [interval_center_radius(x, rad) for x in x0_str]
     M = [[Interval(1 if i == j else 0) for j in range(3)] for i in range(3)]
     segments = []
+    min_abs_outgoing = Decimal("Infinity")
+    min_crossing_nonactive_guard = Decimal("Infinity")
 
     for k, mu in enumerate(policies):
         s = guard_indices[k]
@@ -492,6 +812,10 @@ def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
             raise RuntimeError(f"dphi/dr contains zero after Newton on segment {k}")
         Y = flow(mu, X, R)
         Mk, denom = event_derivative(mu, Y, R, s)
+        outgoing = outgoing_transversality_certificate(k, Y, denom)
+        nonactive_crossing = crossing_nonactive_guard_certificate(k, mu, Y)
+        min_abs_outgoing = min(min_abs_outgoing, outgoing["outgoing_abs_lower"])
+        min_crossing_nonactive_guard = min(min_crossing_nonactive_guard, nonactive_crossing["min_lower"])
         M = matmul(Mk, M)
         cumulative_norm, cumulative_rows = inf_norm(M)
         segments.append({
@@ -503,6 +827,8 @@ def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
             "root_bracket": bracket,
             "dphi_dr": dR,
             "event_denominator": denom,
+            "outgoing_transversality": outgoing,
+            "crossing_nonactive_guard_signs": nonactive_crossing,
             "image_widths": [y.width() for y in Y],
             "cumulative_row_sums": cumulative_rows,
             "cumulative_norm": cumulative_norm,
@@ -524,6 +850,10 @@ def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
         "final_derivative_infinity_norm": final_norm,
         "mvt_image_radius_upper": containment_radius,
         "strict_event_root_bracketing": True,
+        "positive_radius_outgoing_transversality": True,
+        "min_abs_outgoing_event_denominator": min_abs_outgoing,
+        "crossing_nonactive_guard_signs_certified": True,
+        "min_crossing_nonactive_signed_guard_lower_bound": min_crossing_nonactive_guard,
         "contraction_bound_lt_0_75": ok_contraction,
         "mvt_containment_in_initial_box": ok_containment,
         "segments": segments,
@@ -548,6 +878,10 @@ def main():
     lines.append(f"Final ||DPi(V)||_inf upper bound: {cert['final_derivative_infinity_norm']:.18E}")
     lines.append(f"MVT image-radius upper bound: {cert['mvt_image_radius_upper']:.18E}")
     lines.append(f"Strict event-root bracketing: {cert['strict_event_root_bracketing']}")
+    lines.append(f"Outgoing same-sign transversality: {cert['positive_radius_outgoing_transversality']}")
+    lines.append(f"Minimum |outgoing event denominator| lower bound: {cert['min_abs_outgoing_event_denominator']:.18E}")
+    lines.append(f"Non-active guard signs at crossings: {cert['crossing_nonactive_guard_signs_certified']}")
+    lines.append(f"Minimum crossing non-active signed-guard lower bound: {cert['min_crossing_nonactive_signed_guard_lower_bound']:.18E}")
     lines.append(f"Contraction < 0.75: {cert['contraction_bound_lt_0_75']}")
     lines.append(f"Pi(V) subset int(V) by MVT: {cert['mvt_containment_in_initial_box']}")
     lines.append("")
@@ -562,6 +896,9 @@ def main():
                      f"phi(left)={seg['root_bracket']['phi_left'].fmt(12)}, "
                      f"phi(right)={seg['root_bracket']['phi_right'].fmt(12)}")
         lines.append(f"    event denominator={seg['event_denominator'].fmt(12)}")
+        lines.append(f"    outgoing denominator={seg['outgoing_transversality']['outgoing_denominator'].fmt(12)} "
+                     f"same_sign={seg['outgoing_transversality']['same_nonzero_sign']}")
+        lines.append(f"    crossing non-active guard min lower={seg['crossing_nonactive_guard_signs']['min_lower']:.12E}")
         lines.append("    image widths: " + ", ".join(f"{w:.12E}" for w in seg["image_widths"]))
         lines.append("    cumulative row sums: " + ", ".join(f"{r:.12E}" for r in seg["cumulative_row_sums"]))
         lines.append(f"    cumulative ||D(Psi_k...Psi_0)||_inf={seg['cumulative_norm']:.12E}")
@@ -584,6 +921,10 @@ def main():
         "final_derivative_infinity_norm": str(cert["final_derivative_infinity_norm"]),
         "mvt_image_radius_upper": str(cert["mvt_image_radius_upper"]),
         "strict_event_root_bracketing": cert["strict_event_root_bracketing"],
+        "positive_radius_outgoing_transversality": cert["positive_radius_outgoing_transversality"],
+        "min_abs_outgoing_event_denominator": str(cert["min_abs_outgoing_event_denominator"]),
+        "crossing_nonactive_guard_signs_certified": cert["crossing_nonactive_guard_signs_certified"],
+        "min_crossing_nonactive_signed_guard_lower_bound": str(cert["min_crossing_nonactive_signed_guard_lower_bound"]),
         "contraction_bound_lt_0_75": cert["contraction_bound_lt_0_75"],
         "mvt_containment_in_initial_box": cert["mvt_containment_in_initial_box"],
         "segments": [
@@ -600,6 +941,21 @@ def main():
                 },
                 "dphi_dr": s["dphi_dr"].to_pair(),
                 "event_denominator": s["event_denominator"].to_pair(),
+                "outgoing_transversality": {
+                    "outgoing_policy": s["outgoing_transversality"]["outgoing_policy"],
+                    "outgoing_denominator": s["outgoing_transversality"]["outgoing_denominator"].to_pair(),
+                    "incoming_sign": s["outgoing_transversality"]["incoming_sign"],
+                    "outgoing_sign": s["outgoing_transversality"]["outgoing_sign"],
+                    "same_nonzero_sign": s["outgoing_transversality"]["same_nonzero_sign"],
+                    "outgoing_abs_lower": str(s["outgoing_transversality"]["outgoing_abs_lower"]),
+                },
+                "crossing_nonactive_guard_signs": {
+                    "min_lower": str(s["crossing_nonactive_guard_signs"]["min_lower"]),
+                    "rows": [
+                        {"guard": row["guard"], "signed_guard": row["signed_guard"].to_pair()}
+                        for row in s["crossing_nonactive_guard_signs"]["rows"]
+                    ],
+                },
                 "image_widths": [str(w) for w in s["image_widths"]],
                 "cumulative_row_sums": [str(r) for r in s["cumulative_row_sums"]],
                 "cumulative_norm": str(s["cumulative_norm"]),
