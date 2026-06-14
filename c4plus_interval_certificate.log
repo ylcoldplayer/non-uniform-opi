@@ -1,0 +1,66 @@
+C4+ POSITIVE-RADIUS INTERVAL CERTIFICATE
+========================================
+Decimal precision: 100 digits
+Box V: ||x - x0||_inf <= 1e-8
+Initial event-root bracket half-width: 1e-5
+Interval Newton iterations per event: 6
+
+Center residual upper bound: 7.074240613034390477E-43
+Final DPi row-sum upper bounds:
+  row 1: 6.241124268964608984E-1
+  row 2: 7.497356828508540638E-1
+  row 3: 5.281127179751351296E-1
+Final ||DPi(V)||_inf upper bound: 7.497356828508540638E-1
+MVT image-radius upper bound: 7.497356828508540638E-9
+Strict event-root bracketing: True
+Contraction < 0.75: True
+Pi(V) subset int(V) by MVT: True
+
+Per-event interval enclosures:
+k=0 policy=(0, 1, 1) exit=d_2 R=[7.475188948741099802E-1, 7.475188950406826160E-1] width=1.665726357646297740E-10
+    dphi/dr=[-3.545515387362E+1, -3.545515374631E+1]
+    root bracket: positive_to_negative, phi(left)=[3.872741392502E-18, 5.905858413216E-9], phi(right)=[-5.905858419314E-9, -6.729878620482E-18]
+    event denominator=[5.300679468376E-1, 5.300679490252E-1]
+    image widths: 2.781533214633E-8, 1.504437060631E-8, 7.587616557011E-12
+    cumulative row sums: 1.390766607904E+0, 6.064614818802E-1, 3.793808297817E-4
+    cumulative ||D(Psi_k...Psi_0)||_inf=1.390766607904E+0
+k=1 policy=(0, 0, 1) exit=d_1 R=[9.839253768739242288E-1, 9.839253768838419432E-1] width=9.917714375404694558E-12
+    dphi/dr=[1.274587403792E+3, 1.274587404249E+3]
+    root bracket: negative_to_positive, phi(left)=[-1.264099381782E-8, -6.798355960139E-19], phi(right)=[1.586926320481E-18, 1.264099381903E-8]
+    event denominator=[-2.508197784195E+1, -2.508197783268E+1]
+    image widths: 2.901535458350E-8, 3.201193209857E-8, 4.660634331287E-8
+    cumulative row sums: 1.425369438835E+0, 1.181505489466E+0, 1.611727231319E+0
+    cumulative ||D(Psi_k...Psi_0)||_inf=1.611727231319E+0
+k=2 policy=(1, 0, 1) exit=d_3 R=[9.788604914272300807E-1, 9.788604914647258681E-1] width=3.749578735276578681E-11
+    dphi/dr=[-4.936850920078E+2, -4.936850917103E+2]
+    root bracket: positive_to_negative, phi(left)=[2.785529237018E-18, 1.851111121893E-8], phi(right)=[-1.851111122265E-8, -2.791958263587E-18]
+    event denominator=[9.664976629594E+0, 9.664976635875E+0]
+    image widths: 3.481816896150E-8, 8.678046205584E-8, 9.819989132473E-8
+    cumulative row sums: 1.445848592154E+0, 1.451003179604E+0, 1.303880162734E+0
+    cumulative ||D(Psi_k...Psi_0)||_inf=1.451003179604E+0
+k=3 policy=(1, 0, 0) exit=d_2 R=[9.572467828939816907E-1, 9.572467829931463522E-1] width=9.916466149385912304E-11
+    dphi/dr=[6.179231225917E+2, 6.179231245738E+2]
+    root bracket: negative_to_positive, phi(left)=[-6.127613731128E-8, -6.582049781348E-17], phi(right)=[3.245612702470E-17, 6.127613734907E-8]
+    event denominator=[-1.183009846310E+1, -1.183009842314E+1]
+    image widths: 4.974536653071E-8, 1.679361660052E-7, 5.162636682228E-8
+    cumulative row sums: 1.334867250986E+0, 6.516512626416E-1, 1.236871188137E-1
+    cumulative ||D(Psi_k...Psi_0)||_inf=1.334867250986E+0
+k=4 policy=(1, 1, 0) exit=d_3 R=[7.480054367267768268E-1, 7.480054375295933684E-1] width=8.028165416101776498E-10
+    dphi/dr=[2.073692748470E+1, 2.073692765694E+1]
+    root bracket: negative_to_positive, phi(left)=[-1.664794841761E-8, -3.695719162448E-17], phi(right)=[3.218172188399E-17, 1.664794846530E-8]
+    event denominator=[-3.102266929010E-1, -3.102266899913E-1]
+    image widths: 5.683379379345E-8, 4.284432141555E-8, 4.616072524835E-11
+    cumulative row sums: 6.177592105610E-1, 6.401565711229E-1, 8.876362092156E-4
+    cumulative ||D(Psi_k...Psi_0)||_inf=6.401565711229E-1
+k=5 policy=(1, 1, 1) exit=d_1 R=[9.990898916064708398E-1, 9.990898916636904283E-1] width=5.721958845509197822E-11
+    dphi/dr=[-5.034863926794E+2, -5.034863915765E+2]
+    root bracket: positive_to_negative, phi(left)=[9.726745987864E-18, 2.880928412602E-8], phi(right)=[-2.880928414303E-8, -2.182739392932E-17]
+    event denominator=[1.006056328770E+1, 1.006056331034E+1]
+    image widths: 5.830437548817E-8, 6.776653417706E-8, 1.161103092391E-7
+    cumulative row sums: 6.241124268965E-1, 7.497356828509E-1, 5.281127179751E-1
+    cumulative ||D(Psi_k...Psi_0)||_inf=7.497356828509E-1
+
+Interval enclosure for final DPi matrix:
+  [5.713500414115E-1, 5.713500509702E-1]  [-5.275899155261E-2, -5.275899026740E-2]  [3.384373487541E-6, 3.384373617331E-6]
+  [6.863531150350E-1, 6.863531347427E-1]  [-6.337848252350E-2, -6.337848022836E-2]  [4.065584494945E-6, 4.065584698018E-6]
+  [4.834661114754E-1, 4.834661435396E-1]  [-4.464371063484E-2, -4.464370680146E-2]  [2.863800392855E-6, 2.863800741337E-6]

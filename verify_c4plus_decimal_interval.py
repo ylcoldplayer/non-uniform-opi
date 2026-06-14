@@ -20,12 +20,81 @@ Certificate proved by this script:
 This is a certificate for the C4+ contraction part. It should be run unchanged
 and the printed output/log included in the supplemental material.
 """
-from decimal import Decimal, localcontext, ROUND_FLOOR, ROUND_CEILING
+from decimal import Decimal, localcontext, ROUND_FLOOR, ROUND_CEILING, getcontext
 from fractions import Fraction
 from pathlib import Path
 import json
 
 PREC = 100
+getcontext().prec = PREC
+
+
+def decimal_exact(x):
+    """Parse a number-like object as a Decimal without binary-float conversion."""
+    return x if isinstance(x, Decimal) else Decimal(str(x))
+
+
+def directed_add(a, b, rounding):
+    with localcontext() as ctx:
+        ctx.prec = PREC
+        ctx.rounding = rounding
+        return decimal_exact(a) + decimal_exact(b)
+
+
+def directed_sub(a, b, rounding):
+    with localcontext() as ctx:
+        ctx.prec = PREC
+        ctx.rounding = rounding
+        return decimal_exact(a) - decimal_exact(b)
+
+
+def interval_center_radius(center, radius):
+    """Outward-rounded interval [center-radius, center+radius]."""
+    lo = directed_sub(center, radius, ROUND_FLOOR)
+    hi = directed_add(center, radius, ROUND_CEILING)
+    return Interval(lo, hi)
+
+
+def interval_grid_cell(radius, index, splits):
+    """Outward-rounded subinterval of [-radius,radius] in an equal grid."""
+    r = decimal_exact(radius)
+    with localcontext() as ctx:
+        ctx.prec = PREC
+        ctx.rounding = ROUND_FLOOR
+        lo = -r + Decimal(2) * r * Decimal(index) / Decimal(splits)
+    with localcontext() as ctx:
+        ctx.prec = PREC
+        ctx.rounding = ROUND_CEILING
+        hi = -r + Decimal(2) * r * Decimal(index + 1) / Decimal(splits)
+    return Interval(lo, hi)
+
+
+def directed_mul(a, b, rounding):
+    with localcontext() as ctx:
+        ctx.prec = PREC
+        ctx.rounding = rounding
+        return decimal_exact(a) * decimal_exact(b)
+
+
+def directed_sum_product(a, b, c=None, rounding=ROUND_CEILING):
+    """Compute a*b+c with directed rounding; c defaults to 0."""
+    if c is None:
+        c = Decimal(0)
+    with localcontext() as ctx:
+        ctx.prec = PREC
+        ctx.rounding = rounding
+        return decimal_exact(a) * decimal_exact(b) + decimal_exact(c)
+
+
+def directed_sum(values, rounding=ROUND_CEILING):
+    """Directed-rounded sum of Decimal-compatible values."""
+    with localcontext() as ctx:
+        ctx.prec = PREC
+        ctx.rounding = rounding
+        total = Decimal(0)
+        for value in values:
+            total += decimal_exact(value)
+        return total
 
 
 def F(s):
@@ -62,11 +131,11 @@ class Interval:
         if isinstance(lo, Fraction):
             l = dec_from_frac(lo, ROUND_FLOOR)
         else:
-            l = lo if isinstance(lo, Decimal) else Decimal(str(lo))
+            l = decimal_exact(lo)
         if isinstance(hi, Fraction):
             h = dec_from_frac(hi, ROUND_CEILING)
         else:
-            h = hi if isinstance(hi, Decimal) else Decimal(str(hi))
+            h = decimal_exact(hi)
         if l > h:
             l, h = h, l
         self.lo = floor_dec(l)
@@ -347,14 +416,12 @@ def dphi_dr(mu, X, R, s):
 def inf_norm(M):
     rows = []
     for i in range(3):
-        rows.append(sum((M[i][j].abs_upper() for j in range(3)), Decimal(0)))
+        rows.append(directed_sum((M[i][j].abs_upper() for j in range(3)), ROUND_CEILING))
     return max(rows), rows
 
 
 def root_interval_newton(mu, X, s, z_center, init_width="1e-5", iterations=6):
-    z = Decimal(z_center)
-    w = Decimal(init_width)
-    R = Interval(z - w, z + w)
+    R = interval_center_radius(z_center, init_width)
     for _ in range(iterations):
         mid = R.mid()
         Phi = phi(mu, X, Interval(mid), s)
@@ -364,6 +431,35 @@ def root_interval_newton(mu, X, s, z_center, init_width="1e-5", iterations=6):
         N = Interval(mid) - Phi / Der
         R = R.intersect(N)
     return R
+
+
+def root_bracket_certificate(mu, X, s, R):
+    """Certify existence/uniqueness of the event root on R for all X.
+
+    If dphi/dr is bounded away from zero and phi has opposite strict signs at
+    the two endpoints of R, every point in the parameter box has exactly one
+    event root in R.
+    """
+    left = phi(mu, X, Interval(R.lo), s)
+    right = phi(mu, X, Interval(R.hi), s)
+    der = dphi_dr(mu, X, R, s)
+    if der.contains_zero():
+        raise RuntimeError(f"root derivative contains zero in bracket check on segment {mu}, guard {s+1}: {der}")
+    if left.hi < 0 and right.lo > 0:
+        sign_change = "negative_to_positive"
+    elif left.lo > 0 and right.hi < 0:
+        sign_change = "positive_to_negative"
+    else:
+        raise RuntimeError(
+            f"event root not strictly bracketed on segment {mu}, guard {s+1}: "
+            f"phi(lo)={left}, phi(hi)={right}"
+        )
+    return {
+        "phi_left": left,
+        "phi_right": right,
+        "dphi_dr": der,
+        "sign_change": sign_change,
+    }
 
 
 def center_residual():
@@ -382,14 +478,15 @@ def center_residual():
 
 
 def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
-    rad = Decimal(radius)
-    X = [Interval(Decimal(x) - rad, Decimal(x) + rad) for x in x0_str]
+    rad = decimal_exact(radius)
+    X = [interval_center_radius(x, rad) for x in x0_str]
     M = [[Interval(1 if i == j else 0) for j in range(3)] for i in range(3)]
     segments = []
 
     for k, mu in enumerate(policies):
         s = guard_indices[k]
         R = root_interval_newton(mu, X, s, z_str[k], init_width, iterations)
+        bracket = root_bracket_certificate(mu, X, s, R)
         dR = dphi_dr(mu, X, R, s)
         if dR.contains_zero():
             raise RuntimeError(f"dphi/dr contains zero after Newton on segment {k}")
@@ -403,6 +500,7 @@ def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
             "guard": s + 1,
             "root_interval": R,
             "root_width": R.width(),
+            "root_bracket": bracket,
             "dphi_dr": dR,
             "event_denominator": denom,
             "image_widths": [y.width() for y in Y],
@@ -413,7 +511,7 @@ def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
 
     final_norm, final_rows = inf_norm(M)
     res, guard_res, ret_res = center_residual()
-    containment_radius = res + final_norm * rad
+    containment_radius = directed_sum_product(final_norm, rad, res, ROUND_CEILING)
     ok_contraction = final_norm < Decimal("0.75")
     ok_containment = containment_radius < rad
     return {
@@ -425,6 +523,7 @@ def verify_c4plus(radius="1e-8", init_width="1e-5", iterations=6):
         "final_derivative_row_sums": final_rows,
         "final_derivative_infinity_norm": final_norm,
         "mvt_image_radius_upper": containment_radius,
+        "strict_event_root_bracketing": True,
         "contraction_bound_lt_0_75": ok_contraction,
         "mvt_containment_in_initial_box": ok_containment,
         "segments": segments,
@@ -448,6 +547,7 @@ def main():
         lines.append(f"  row {i+1}: {r:.18E}")
     lines.append(f"Final ||DPi(V)||_inf upper bound: {cert['final_derivative_infinity_norm']:.18E}")
     lines.append(f"MVT image-radius upper bound: {cert['mvt_image_radius_upper']:.18E}")
+    lines.append(f"Strict event-root bracketing: {cert['strict_event_root_bracketing']}")
     lines.append(f"Contraction < 0.75: {cert['contraction_bound_lt_0_75']}")
     lines.append(f"Pi(V) subset int(V) by MVT: {cert['mvt_containment_in_initial_box']}")
     lines.append("")
@@ -458,6 +558,9 @@ def main():
             f"R={seg['root_interval'].fmt(18)} width={seg['root_width']:.18E}"
         )
         lines.append(f"    dphi/dr={seg['dphi_dr'].fmt(12)}")
+        lines.append(f"    root bracket: {seg['root_bracket']['sign_change']}, "
+                     f"phi(left)={seg['root_bracket']['phi_left'].fmt(12)}, "
+                     f"phi(right)={seg['root_bracket']['phi_right'].fmt(12)}")
         lines.append(f"    event denominator={seg['event_denominator'].fmt(12)}")
         lines.append("    image widths: " + ", ".join(f"{w:.12E}" for w in seg["image_widths"]))
         lines.append("    cumulative row sums: " + ", ".join(f"{r:.12E}" for r in seg["cumulative_row_sums"]))
@@ -480,6 +583,7 @@ def main():
         "final_derivative_row_sums": [str(x) for x in cert["final_derivative_row_sums"]],
         "final_derivative_infinity_norm": str(cert["final_derivative_infinity_norm"]),
         "mvt_image_radius_upper": str(cert["mvt_image_radius_upper"]),
+        "strict_event_root_bracketing": cert["strict_event_root_bracketing"],
         "contraction_bound_lt_0_75": cert["contraction_bound_lt_0_75"],
         "mvt_containment_in_initial_box": cert["mvt_containment_in_initial_box"],
         "segments": [
@@ -489,6 +593,11 @@ def main():
                 "guard": s["guard"],
                 "root_interval": s["root_interval"].to_pair(),
                 "root_width": str(s["root_width"]),
+                "root_bracket": {
+                    "sign_change": s["root_bracket"]["sign_change"],
+                    "phi_left": s["root_bracket"]["phi_left"].to_pair(),
+                    "phi_right": s["root_bracket"]["phi_right"].to_pair(),
+                },
                 "dphi_dr": s["dphi_dr"].to_pair(),
                 "event_denominator": s["event_denominator"].to_pair(),
                 "image_widths": [str(w) for w in s["image_widths"]],

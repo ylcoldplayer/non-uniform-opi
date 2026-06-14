@@ -63,7 +63,7 @@ p = base.p
 
 exponents = [1, 9, 40]
 rho_str = "1e-30"
-rho_dec = Decimal(rho_str)
+rho_dec = base.decimal_exact(rho_str)
 
 # ---------------------------------------------------------------------------
 # Exact rational functions for C1 center and derivative.
@@ -170,8 +170,8 @@ def invert_matrix_fraction(M):
 # ---------------------------------------------------------------------------
 
 def interval_box_center_values():
-    x0 = [Interval(Decimal(s) - rho_dec, Decimal(s) + rho_dec) for s in x0_str]
-    z = [Interval(Decimal(s) - rho_dec, Decimal(s) + rho_dec) for s in z_str]
+    x0 = [base.interval_center_radius(s, rho_dec) for s in x0_str]
+    z = [base.interval_center_radius(s, rho_dec) for s in z_str]
     return x0, z
 
 
@@ -219,7 +219,7 @@ def interval_matmul(A, B):
 
 
 def interval_inf_norm(M):
-    rows = [sum((M[i][j].abs_upper() for j in range(len(M[i]))), Decimal(0)) for i in range(len(M))]
+    rows = [base.directed_sum((M[i][j].abs_upper() for j in range(len(M[i]))), base.ROUND_CEILING) for i in range(len(M))]
     return max(rows), rows
 
 
@@ -243,7 +243,7 @@ def decimal_preconditioner_from_DG(DG_frac, digits=90):
 
 
 def interval_matrix_point_inf_norm(A):
-    rows = [sum((cell.abs_upper() for cell in row), Decimal(0)) for row in A]
+    rows = [base.directed_sum((cell.abs_upper() for cell in row), base.ROUND_CEILING) for row in A]
     return max(rows), rows
 
 # ---------------------------------------------------------------------------
@@ -442,7 +442,7 @@ def verify_C1():
     # arithmetic, so exact inversion is not needed.
     A_dec = mpmath_inverse_as_decimal_rationals(DG_frac, digits=80)
     A_int = [[Interval(A_dec[i][j]) for j in range(9)] for i in range(9)]
-    A_norm_rows = [sum((A_int[i][j].abs_upper() for j in range(9)), Decimal(0)) for i in range(9)]
+    A_norm_rows = [base.directed_sum((A_int[i][j].abs_upper() for j in range(9)), base.ROUND_CEILING) for i in range(9)]
     A_norm_dec = max(A_norm_rows)
     # Interval DG(B)
     DGB, Xs = compute_DG_interval_on_B()
@@ -456,7 +456,7 @@ def verify_C1():
         I_minus.append(row)
     C_norm, C_rows = interval_inf_norm(I_minus)
     G_dec = base.dec_from_frac(max_G, base.ROUND_CEILING)
-    k_radius = A_norm_dec * G_dec + C_norm * rho_dec
+    k_radius = base.directed_sum_product(C_norm, rho_dec, base.directed_mul(A_norm_dec, G_dec, base.ROUND_CEILING), base.ROUND_CEILING)
     ok_G = G_dec < Decimal("8e-43")
     ok_A = A_norm_dec < Decimal("13")
     ok_C = C_norm < Decimal("1.2e-20")

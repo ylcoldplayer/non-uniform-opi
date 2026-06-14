@@ -64,7 +64,7 @@ def section_derivative_from_ambient(M):
 
 
 def inf_norm2(M2):
-    rows = [sum((M2[i][j].abs_upper() for j in range(2)), Decimal(0)) for i in range(2)]
+    rows = [base.directed_sum((M2[i][j].abs_upper() for j in range(2)), base.ROUND_CEILING) for i in range(2)]
     return max(rows), rows
 
 
@@ -75,6 +75,7 @@ def verify_uv_subbox(U, V, init_width="1e-4", iterations=8):
     for k, mu in enumerate(base.policies):
         s = base.guard_indices[k]
         R = base.root_interval_newton(mu, X, s, base.z_str[k], init_width, iterations)
+        bracket = base.root_bracket_certificate(mu, X, s, R)
         dR = base.dphi_dr(mu, X, R, s)
         if dR.contains_zero():
             raise RuntimeError(f"dphi/dr contains zero on segment {k}: {dR}")
@@ -88,6 +89,7 @@ def verify_uv_subbox(U, V, init_width="1e-4", iterations=8):
             "k": k,
             "root_interval": R,
             "root_width": R.width(),
+            "root_bracket": bracket,
             "dphi_dr": dR,
             "denom": denom,
         })
@@ -107,7 +109,7 @@ def center_section_residual():
 
 
 def verify_section(radius="1e-3", splits=4, init_width="1e-4", iterations=8):
-    r = Decimal(radius)
+    r = base.decimal_exact(radius)
     max_norm = Decimal(0)
     max_rows = [Decimal(0), Decimal(0)]
     max_root_width = Decimal(0)
@@ -115,10 +117,8 @@ def verify_section(radius="1e-3", splits=4, init_width="1e-4", iterations=8):
     min_abs_denom = Decimal("Infinity")
     cells = []
     for iu, iv in itertools.product(range(splits), repeat=2):
-        U = Interval(-r + Decimal(2) * r * Decimal(iu) / Decimal(splits),
-                     -r + Decimal(2) * r * Decimal(iu + 1) / Decimal(splits))
-        V = Interval(-r + Decimal(2) * r * Decimal(iv) / Decimal(splits),
-                     -r + Decimal(2) * r * Decimal(iv + 1) / Decimal(splits))
+        U = base.interval_grid_cell(r, iu, splits)
+        V = base.interval_grid_cell(r, iv, splits)
         Xf, M2, norm, rows, segs = verify_uv_subbox(U, V, init_width, iterations)
         if norm > max_norm:
             max_norm = norm
@@ -139,11 +139,19 @@ def verify_section(radius="1e-3", splits=4, init_width="1e-4", iterations=8):
             "norm": str(norm),
             "root_intervals": [s["root_interval"].to_pair() for s in segs],
             "root_widths": [str(s["root_width"]) for s in segs],
+            "root_brackets": [
+                {
+                    "sign_change": s["root_bracket"]["sign_change"],
+                    "phi_left": s["root_bracket"]["phi_left"].to_pair(),
+                    "phi_right": s["root_bracket"]["phi_right"].to_pair(),
+                }
+                for s in segs
+            ],
             "dphi_dr": [s["dphi_dr"].to_pair() for s in segs],
             "event_denominators": [s["denom"].to_pair() for s in segs],
         })
     res, res_vec = center_section_residual()
-    image_radius_upper = res + max_norm * r
+    image_radius_upper = base.directed_sum_product(max_norm, r, res, base.ROUND_CEILING)
     ok_contraction = max_norm < Decimal(1)
     ok_containment = image_radius_upper < r
     return {
@@ -163,6 +171,7 @@ def verify_section(radius="1e-3", splits=4, init_width="1e-4", iterations=8):
         "min_abs_dphi_dr": str(min_abs_dphi),
         "min_abs_event_denominator": str(min_abs_denom),
         "mvt_image_radius_upper": str(image_radius_upper),
+        "strict_event_root_bracketing": True,
         "contraction_lt_1": ok_contraction,
         "mvt_containment_in_section_box": ok_containment,
         "cells": cells,
@@ -189,6 +198,7 @@ def main():
     lines.append(f"Max event-root interval width: {Decimal(cert['max_event_root_width']):.18E}")
     lines.append(f"Minimum |dphi/dr| lower bound: {Decimal(cert['min_abs_dphi_dr']):.18E}")
     lines.append(f"Minimum |event denominator| lower bound: {Decimal(cert['min_abs_event_denominator']):.18E}")
+    lines.append(f"Strict event-root bracketing: {cert['strict_event_root_bracketing']} for every event on every subbox")
     lines.append(f"MVT image-radius upper: {Decimal(cert['mvt_image_radius_upper']):.18E}")
     lines.append(f"Contraction < 1: {cert['contraction_lt_1']}")
     lines.append(f"Pi(V) subset int(V) by MVT: {cert['mvt_containment_in_section_box']}")
